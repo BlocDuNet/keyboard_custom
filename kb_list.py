@@ -67,6 +67,13 @@ def list_keyboards():
 
     user32 = ctypes.windll.user32
 
+    # Setup argtypes/restypes for 64-bit safety
+    user32.GetRawInputDeviceList.argtypes = [ctypes.POINTER(RAWINPUTDEVICELIST), ctypes.POINTER(wintypes.UINT), wintypes.UINT]
+    user32.GetRawInputDeviceList.restype = wintypes.UINT
+
+    user32.GetRawInputDeviceInfoW.argtypes = [wintypes.HANDLE, wintypes.UINT, wintypes.LPVOID, ctypes.POINTER(wintypes.UINT)]
+    user32.GetRawInputDeviceInfoW.restype = wintypes.UINT
+
     # Get number of devices
     n_devices = wintypes.UINT()
     user32.GetRawInputDeviceList(None, ctypes.byref(n_devices), ctypes.sizeof(RAWINPUTDEVICELIST))

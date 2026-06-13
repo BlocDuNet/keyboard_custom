@@ -55,6 +55,19 @@ def monitor_keyboards():
     user32 = ctypes.windll.user32
     kernel32 = ctypes.windll.kernel32
 
+    # Setup argtypes/restypes for 64-bit safety
+    user32.GetRawInputData.argtypes = [wintypes.HANDLE, wintypes.UINT, wintypes.LPVOID, ctypes.POINTER(wintypes.UINT), wintypes.UINT]
+    user32.GetRawInputData.restype = wintypes.UINT
+
+    user32.RegisterRawInputDevices.argtypes = [ctypes.POINTER(RAWINPUTDEVICE), wintypes.UINT, wintypes.UINT]
+    user32.RegisterRawInputDevices.restype = wintypes.BOOL
+
+    user32.CreateWindowExW.argtypes = [wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.HWND, wintypes.HANDLE, wintypes.HINSTANCE, wintypes.LPVOID]
+    user32.CreateWindowExW.restype = wintypes.HWND
+
+    user32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    user32.DefWindowProcW.restype = ctypes.c_longlong # LRESULT is 64-bit
+
     def wnd_proc(hwnd, msg, wparam, lparam):
         if msg == WM_INPUT:
             size = wintypes.UINT()

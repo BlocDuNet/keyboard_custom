@@ -64,6 +64,19 @@ def press_key(vk):
     user32.SendInput(2, ctypes.byref(inputs), ctypes.sizeof(INPUT))
 
 def raw_input_loop():
+    # Setup argtypes/restypes for 64-bit safety inside the thread
+    user32.GetRawInputData.argtypes = [wintypes.HANDLE, wintypes.UINT, wintypes.LPVOID, ctypes.POINTER(wintypes.UINT), wintypes.UINT]
+    user32.GetRawInputData.restype = wintypes.UINT
+
+    user32.RegisterRawInputDevices.argtypes = [ctypes.POINTER(RAWINPUTDEVICE), wintypes.UINT, wintypes.UINT]
+    user32.RegisterRawInputDevices.restype = wintypes.BOOL
+
+    user32.CreateWindowExW.argtypes = [wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.HWND, wintypes.HANDLE, wintypes.HINSTANCE, wintypes.LPVOID]
+    user32.CreateWindowExW.restype = wintypes.HWND
+
+    user32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    user32.DefWindowProcW.restype = ctypes.c_longlong # LRESULT
+
     def wnd_proc(hwnd, msg, wparam, lparam):
         if msg == WM_INPUT:
             size = wintypes.UINT()
@@ -133,6 +146,16 @@ def main():
     if sys.platform != "win32":
         print("Erreur : Ce logiciel nécessite Windows.")
         return
+
+    # Global argtypes for hook/input functions
+    user32.SetWindowsHookExW.argtypes = [ctypes.c_int, ctypes.c_void_p, wintypes.HINSTANCE, wintypes.DWORD]
+    user32.SetWindowsHookExW.restype = wintypes.HANDLE
+
+    user32.CallNextHookEx.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM]
+    user32.CallNextHookEx.restype = ctypes.c_longlong
+
+    user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
+    user32.SendInput.restype = wintypes.UINT
 
     print("=== Logiciel de Personnalisation de Clavier ===")
     print("1. Appuyez sur n'importe quelle touche du clavier à modifier pour l'identifier.")
