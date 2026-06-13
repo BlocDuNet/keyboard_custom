@@ -44,6 +44,7 @@ user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 
 # Setup 64-bit safe signatures
+kernel32.GetModuleHandleW.restype = wintypes.HINSTANCE
 user32.GetRawInputData.argtypes = [wintypes.HANDLE, wintypes.UINT, wintypes.LPVOID, ctypes.POINTER(wintypes.UINT), wintypes.UINT]
 user32.GetRawInputData.restype = wintypes.UINT
 user32.RegisterRawInputDevices.argtypes = [ctypes.POINTER(RAWINPUTDEVICE), wintypes.UINT, wintypes.UINT]
@@ -63,43 +64,90 @@ user32.SendInput.restype = wintypes.UINT
 class KeyboardApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Keyboard Customizer (64-bit)")
-        self.root.geometry("500x400")
+        self.root.title("Keyboard Customizer PRO")
+        self.root.geometry("600x500")
 
         self.last_raw_event = {"hDevice": None, "vkey": None, "time": 0}
         self.lock = threading.Lock()
+
         self.target_handle = None
         self.mapping_active = False
+        self.is_identifying = False
+
         self.mapping = {0x41: 0x42} # A -> B
 
         self.setup_ui()
         self.start_threads()
 
     def setup_ui(self):
-        self.status_label = ttk.Label(self.root, text="Statut : Prêt", font=("Arial", 12))
-        self.status_label.pack(pady=10)
+        # Header
+        self.status_frame = ttk.Frame(self.root, padding="10")
+        self.status_frame.pack(fill=tk.X)
 
-        self.id_btn = ttk.Button(self.root, text="Identifier le clavier (Appuyez sur une touche)", command=self.start_identification)
-        self.id_btn.pack(pady=5)
+        self.status_label = ttk.Label(self.status_frame, text="Statut : Prêt", font=("Arial", 11, "bold"))
+        self.status_label.pack(side=tk.LEFT)
 
-        self.info_text = tk.Text(self.root, height=10, width=50)
-        self.info_text.pack(pady=10)
+        self.target_label = ttk.Label(self.status_frame, text="Aucun clavier cible", foreground="gray")
+        self.target_label.pack(side=tk.RIGHT)
 
-        self.log("Logiciel démarré.")
+        # Buttons
+        self.btn_frame = ttk.Frame(self.root, padding="10")
+        self.btn_frame.pack(fill=tk.X)
 
-    def log(self, msg):
-        self.info_text.insert(tk.END, f"[{time.strftime('%H:%M:%S')}] {msg}\n")
-        self.info_text.see(tk.END)
+        self.id_btn = ttk.Button(self.btn_frame, text="Identifier le clavier", command=self.start_identification)
+        self.id_btn.pack(side=tk.LEFT, padx=5)
 
-    def start_identification(self):
+        self.reset_btn = ttk.Button(self.btn_frame, text="Réinitialiser", command=self.reset_state)
+        self.reset_btn.pack(side=tk.LEFT, padx=5)
+
+        # Log
+        self.log_frame = ttk.Frame(self.root, padding="10")
+        self.log_frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(self.log_frame, text="Journal des événements :").pack(anchor=tk.W)
+        self.log_widget = tk.Text(self.log_frame, height=15, width=70, font=("Consolas", 9))
+        self.log_widget.pack(fill=tk.BOTH, expand=True)
+
+        scrollbar = ttk.Scrollbar(self.log_widget, command=self.log_widget.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.log_widget.config(yscrollcommand=scrollbar.set)
+
+    def log(self, msg, color=None):
+        timestamp = time.strftime('%H:%M:%S')
+        self.log_widget.tag_config("red", foreground="red")
+        self.log_widget.tag_config("blue", foreground="blue")
+        self.log_widget.tag_config("green", foreground="green")
+
+        tag = None
+        if "Identification" in msg: tag = "blue"
+        if "SUCCESS" in msg or "Actif" in msg: tag = "green"
+        if "Erreur" in msg: tag = "red"
+
+        self.log_widget.insert(tk.END, f"[{timestamp}] {msg}\n", tag)
+        self.log_widget.see(tk.END)
+
+    def reset_state(self):
         self.target_handle = None
         self.mapping_active = False
-        self.status_label.config(text="Statut : Identification en cours... Appuyez sur une touche.")
-        self.log("En attente d'une touche pour identifier le clavier...")
+        self.is_identifying = False
+        self.status_label.config(text="Statut : Prêt")
+        self.target_label.config(text="Aucun clavier cible", foreground="gray")
+        self.log("État réinitialisé.")
+
+    def start_identification(self):
+        self.is_identifying = True
+        self.target_handle = None
+        self.mapping_active = False
+        self.status_label.config(text="Statut : Identification...")
+        self.log("Mode Identification activé. Appuyez sur une touche sur le clavier souhaité.")
 
     def start_threads(self):
-        threading.Thread(target=self.raw_input_loop, daemon=True).start()
-        threading.Thread(target=self.hook_loop, daemon=True).start()
+        # Thread for Raw Input
+        t1 = threading.Thread(target=self.raw_input_loop, daemon=True)
+        t1.start()
+        # Thread for Keyboard Hook
+        t2 = threading.Thread(target=self.hook_loop, daemon=True)
+        t2.start()
 
     def raw_input_loop(self):
         def wnd_proc(hwnd, msg, wparam, lparam):
@@ -111,30 +159,35 @@ class KeyboardApp:
                     user32.GetRawInputData(ctypes.cast(lparam, wintypes.HANDLE), RID_INPUT, buffer, ctypes.byref(size), ctypes.sizeof(RAWINPUTHEADER))
                     raw = RAWINPUT.from_buffer(buffer)
                     if raw.header.dwType == RIM_TYPEKEYBOARD:
+                        h = raw.header.hDevice
+                        vk = raw.data.keyboard.VKey
+                        # Update shared state
                         with self.lock:
-                            # IMPORTANT: On 64-bit, hDevice is a large integer.
-                            # We store its string representation or the raw value.
-                            self.last_raw_event = {
-                                "hDevice": raw.header.hDevice,
-                                "vkey": raw.data.keyboard.VKey,
-                                "time": time.time()
-                            }
+                            self.last_raw_event = {"hDevice": h, "vkey": vk, "time": time.time()}
+
+                        # Monitor everything in log for debug
+                        if not self.mapping_active or self.is_identifying:
+                            # Use after to update GUI safely from thread
+                            self.root.after(0, lambda h=h, vk=vk: self.log(f"Raw Input: Clavier {h} | Touche {hex(vk)}"))
+
             return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
         WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_longlong, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
         self.wnd_proc_ptr = WNDPROC(wnd_proc)
 
-        class_name = "KeyboardRawInputWindow"
+        class_name = "KeyboardApp_RawInput"
         class WNDCLASSEX(ctypes.Structure):
             _fields_ = [("cbSize", wintypes.UINT), ("style", wintypes.UINT), ("lpfnWndProc", WNDPROC), ("cbClsExtra", ctypes.c_int), ("cbWndExtra", ctypes.c_int), ("hInstance", wintypes.HINSTANCE), ("hIcon", wintypes.HICON), ("hCursor", wintypes.HCURSOR), ("hbrBackground", wintypes.HBRUSH), ("lpszMenuName", wintypes.LPCWSTR), ("lpszClassName", wintypes.LPCWSTR), ("hIconSm", wintypes.HICON)]
 
         wc = WNDCLASSEX()
         wc.cbSize = ctypes.sizeof(WNDCLASSEX); wc.lpfnWndProc = self.wnd_proc_ptr; wc.hInstance = kernel32.GetModuleHandleW(None); wc.lpszClassName = class_name
         user32.RegisterClassExW(ctypes.byref(wc))
-        hwnd = user32.CreateWindowExW(0, class_name, "HiddenRawInput", 0, 0, 0, 0, 0, 0, 0, wc.hInstance, None)
+        hwnd = user32.CreateWindowExW(0, class_name, "Hidden", 0, 0, 0, 0, 0, 0, 0, wc.hInstance, None)
 
         rid = RAWINPUTDEVICE(0x01, 0x06, RIDEV_INPUTSINK, hwnd)
-        user32.RegisterRawInputDevices(ctypes.byref(rid), 1, ctypes.sizeof(RAWINPUTDEVICE))
+        if not user32.RegisterRawInputDevices(ctypes.byref(rid), 1, ctypes.sizeof(RAWINPUTDEVICE)):
+            self.root.after(0, lambda: messagebox.showerror("Erreur", "Impossible de s'enregistrer pour Raw Input."))
+            return
 
         msg = wintypes.MSG()
         while user32.GetMessageW(ctypes.byref(msg), 0, 0, 0) != 0:
@@ -145,26 +198,27 @@ class KeyboardApp:
         def hook_callback(nCode, wParam, lParam):
             if nCode >= 0:
                 kb = KBDLLHOOKSTRUCT.from_address(lParam)
-                if kb.flags & 0x10: # Ignore injected
-                    return user32.CallNextHookEx(None, nCode, wParam, lParam)
+                if kb.flags & 0x10: return user32.CallNextHookEx(None, nCode, wParam, lParam)
 
                 with self.lock:
                     current = self.last_raw_event.copy()
 
-                # Match based on time and VKey
-                if current["vkey"] == kb.vkCode and (time.time() - current["time"]) < 0.05:
-                    # Identification
-                    if self.target_handle is None:
+                # Correlation Logic
+                # Increase window to 100ms for safety
+                if current["vkey"] == kb.vkCode and (time.time() - current["time"]) < 0.1:
+                    # Identification Phase
+                    if self.is_identifying:
                         self.target_handle = current["hDevice"]
+                        self.is_identifying = False
                         self.mapping_active = True
-                        self.root.after(0, lambda: self.log(f"Clavier Cible Identifié : {self.target_handle}"))
-                        self.root.after(0, lambda: self.status_label.config(text=f"Statut : Actif (Clavier {self.target_handle})"))
+                        self.root.after(0, self.on_identified)
+                        return 0 # Allow this key to pass
 
-                    # Remapping
-                    elif self.mapping_active and current["hDevice"] == self.target_handle:
+                    # Mapping Phase
+                    if self.mapping_active and current["hDevice"] == self.target_handle:
                         if kb.vkCode in self.mapping:
                             if wParam == WM_KEYDOWN or wParam == WM_SYSKEYDOWN:
-                                self.root.after(0, lambda v=kb.vkCode: self.log(f"Remap: {hex(v)} -> {hex(self.mapping[v])}"))
+                                self.root.after(0, lambda v=kb.vkCode: self.log(f"Mapping: {hex(v)} -> {hex(self.mapping[v])}"))
                                 self.press_key(self.mapping[kb.vkCode])
                             return 1 # Block
 
@@ -179,20 +233,22 @@ class KeyboardApp:
             user32.TranslateMessage(ctypes.byref(msg))
             user32.DispatchMessageW(ctypes.byref(msg))
 
+    def on_identified(self):
+        self.status_label.config(text="Statut : ACTIF")
+        self.target_label.config(text=f"Clavier Cible : {self.target_handle}", foreground="green")
+        self.log(f"SUCCESS: Clavier {self.target_handle} identifie et active.")
+
     def press_key(self, vk):
         inputs = (INPUT * 2)()
-        inputs[0].type = 1
-        inputs[0].u.ki.wVk = vk
-        inputs[0].u.ki.dwFlags = 0
-        inputs[1].type = 1
-        inputs[1].u.ki.wVk = vk
-        inputs[1].u.ki.dwFlags = 2
+        inputs[0].type = 1; inputs[0].u.ki.wVk = vk; inputs[0].u.ki.dwFlags = 0
+        inputs[1].type = 1; inputs[1].u.ki.wVk = vk; inputs[1].u.ki.dwFlags = 2
         user32.SendInput(2, ctypes.byref(inputs), ctypes.sizeof(INPUT))
 
 if __name__ == "__main__":
     if sys.platform != "win32":
-        print("Windows requis.")
+        print("Erreur: Windows est requis.")
     else:
         root = tk.Tk()
+        # Optional: ensure app runs as admin message?
         app = KeyboardApp(root)
         root.mainloop()

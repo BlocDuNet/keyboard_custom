@@ -31,11 +31,16 @@ Pour télécharger facilement les dernières modifications sans passer par le si
 
 ## Utilisation de l'application principale
 
-Lancez `main_app.py` avec des droits d'administrateur (nécessaire pour intercepter les touches système) :
+Lancez `main_gui.py` avec des **droits d'administrateur** (nécessaire pour intercepter les touches dans toutes les fenêtres) :
 
 ```bash
-python main_app.py
+python main_gui.py
 ```
+
+### Conseils de dépannage
+1. **Focus :** Si le logiciel ne détecte rien, assurez-vous que la fenêtre du logiciel est active au moins une fois pour que Windows lui envoie les messages `WM_INPUT`.
+2. **Droits d'admin :** Si vous essayez de remapper des touches alors qu'un jeu ou un logiciel en mode Administrateur a le focus, votre script Python doit AUSSI être en mode Administrateur.
+3. **HID/Sayodevice :** L'erreur "Unable to load any of the following libraries" signifie que Python ne trouve pas `hidapi.dll`. Téléchargez-la sur le dépôt officiel de `libusb/hidapi` (version x64) et placez-la à côté de votre script.
 
 1. Le logiciel attendra que vous appuyiez sur une touche.
 2. Le clavier que vous avez utilisé sera "marqué" comme cible.

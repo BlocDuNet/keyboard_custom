@@ -1,44 +1,54 @@
-import hid
+try:
+    import hid
+except ImportError:
+    hid = None
+
 import time
 
 # Sayodevice constants
 SAYO_VID = 0x8089
-# Common PIDs found in research, might vary by model (O3C, etc.)
-# PID might be 0x0001, 0x0002, etc.
 
 def find_sayodevices():
+    if not hid:
+        print("Erreur : La bibliothèque 'hidapi' n'est pas installée ou 'hidapi.dll' est manquante.")
+        return []
+
     devices = []
-    for d in hid.enumerate():
-        if d['vendor_id'] == SAYO_VID:
-            devices.append(d)
+    try:
+        for d in hid.enumerate():
+            if d['vendor_id'] == SAYO_VID:
+                devices.append(d)
+    except Exception as e:
+        print(f"Erreur lors de l'énumération HID : {e}")
     return devices
 
 def set_rgb_simple(device_path, r, g, b):
+    if not hid: return
     try:
         h = hid.device()
         h.open_path(device_path)
 
-        # This is a placeholder report based on common HID keyboard RGB protocols
-        # Actual Sayodevice protocol might differ (e.g., 64-byte report starting with a specific byte)
-        # Based on research, Sayodevice often uses a report ID 0 or 1.
-
-        # Most Sayodevices use 64-byte reports.
+        # Structure de rapport générique (64 octets)
         report = [0] * 64
-        report[0] = 0x00 # Report ID (if used by device)
-        report[1] = 0x01 # Example command: Set LED?
+        report[0] = 0x00
+        report[1] = 0x01 # Commande LED (Exemple)
         report[2] = r
         report[3] = g
         report[4] = b
 
         # h.write(report)
-        print(f"Would send RGB {r},{g},{b} to {device_path}")
+        print(f"Envoi RGB {r},{g},{b} vers {device_path}")
         h.close()
     except Exception as e:
-        print(f"Error communicating with Sayodevice: {e}")
+        print(f"Erreur HID : {e}")
 
 if __name__ == "__main__":
-    devs = find_sayodevices()
-    if not devs:
-        print("No Sayodevice found.")
-    for d in devs:
-        print(f"Found: {d['product_string']} (PID: {hex(d['product_id'])}) at {d['path']}")
+    if not hid:
+        print("Veuillez installer hidapi : pip install hidapi")
+        print("Et assurez-vous que hidapi.dll (64-bit) est présent.")
+    else:
+        devs = find_sayodevices()
+        if not devs:
+            print("Aucun Sayodevice trouvé.")
+        for d in devs:
+            print(f"Trouvé : {d['product_string']} (PID: {hex(d['product_id'])})")

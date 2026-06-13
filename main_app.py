@@ -43,6 +43,9 @@ class INPUT(ctypes.Structure):
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 
+# Setup restypes for 64-bit safety
+kernel32.GetModuleHandleW.restype = wintypes.HINSTANCE
+
 # --- App State ---
 last_event = {"hDevice": None, "vkey": None, "time": 0}
 lock = threading.Lock()
@@ -92,7 +95,7 @@ def raw_input_loop():
                         last_event["time"] = time.time()
         return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
-    WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_long, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+    WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_longlong, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
     proc_ptr = WNDPROC(wnd_proc)
     class_name = "KeyboardAppWindow"
     class WNDCLASSEX(ctypes.Structure):
@@ -162,7 +165,7 @@ def main():
 
     threading.Thread(target=raw_input_loop, daemon=True).start()
 
-    HOOKPROC = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+    HOOKPROC = ctypes.WINFUNCTYPE(ctypes.c_longlong, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
     ptr = HOOKPROC(hook_callback)
     hook = user32.SetWindowsHookExW(WH_KEYBOARD_LL, ptr, kernel32.GetModuleHandleW(None), 0)
 
