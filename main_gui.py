@@ -81,30 +81,34 @@ class KeyboardApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Keyboard Customizer PRO")
-        self.root.geometry("1000x700")
+        self.root.geometry("1000x750")
 
         self.last_raw_event = {"hDevice": 0, "vk": 0, "time": 0}
         self.lock = threading.Lock()
-        self.log_queue = queue.Queue()
+        self.ui_queue = queue.Queue()
 
         self.is_identifying = False
         self.config = self.load_config()
 
         self.setup_ui()
         self.start_threads()
-        self.process_logs()
+        self.process_ui_tasks()
 
     def load_config(self):
         if os.path.exists(CONFIG_FILE):
             try:
                 with open(CONFIG_FILE, 'r') as f:
                     return json.load(f)
-            except: pass
+            except Exception as e:
+                print(f"Error loading config: {e}")
         return {"keyboards": {}}
 
     def save_config(self):
-        with open(CONFIG_FILE, 'w') as f:
-            json.dump(self.config, f, indent=4)
+        try:
+            with open(CONFIG_FILE, 'w') as f:
+                json.dump(self.config, f, indent=4)
+        except Exception as e:
+            self.log(f"Erreur de sauvegarde : {e}", "err")
 
     def setup_ui(self):
         self.paned = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
@@ -123,24 +127,24 @@ class KeyboardApp:
         btn_box = ttk.Frame(self.left_frame); btn_box.pack(fill=tk.X, pady=5)
         ttk.Button(btn_box, text="IDENTIFIER", command=self.start_identification).pack(side=tk.LEFT, padx=2)
         ttk.Button(btn_box, text="Renommer", command=self.rename_keyboard).pack(side=tk.LEFT, padx=2)
-        ttk.Button(btn_box, text="X", width=3, command=self.delete_keyboard).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_box, text="Supprimer", command=self.delete_keyboard).pack(side=tk.LEFT, padx=2)
 
         # Right: Config & Logs
         self.right_frame = ttk.Frame(self.paned, padding="10")
         self.paned.add(self.right_frame, weight=2)
 
         # Mapping Frame
-        self.cfg_frame = ttk.LabelFrame(self.right_frame, text="Mappages des touches (Format 0x41)", padding="10")
+        self.cfg_frame = ttk.LabelFrame(self.right_frame, text="Mappages des touches (Hex: 0x41)", padding="10")
         self.cfg_frame.pack(fill=tk.X, pady=5)
 
         self.sel_label = ttk.Label(self.cfg_frame, text="Sélectionnez un clavier à gauche", font=("Arial", 9, "italic"))
         self.sel_label.pack(pady=5)
 
         map_input = ttk.Frame(self.cfg_frame); map_input.pack(fill=tk.X)
-        ttk.Label(map_input, text="DE :").grid(row=0, column=0)
-        self.vk_from = ttk.Entry(map_input, width=8); self.vk_from.grid(row=0, column=1, padx=5)
-        ttk.Label(map_input, text="VERS :").grid(row=0, column=2)
-        self.vk_to = ttk.Entry(map_input, width=8); self.vk_to.grid(row=0, column=3, padx=5)
+        ttk.Label(map_input, text="DE (Original) :").grid(row=0, column=0)
+        self.vk_from = ttk.Entry(map_input, width=10); self.vk_from.grid(row=0, column=1, padx=5)
+        ttk.Label(map_input, text="VERS (Cible) :").grid(row=0, column=2)
+        self.vk_to = ttk.Entry(map_input, width=10); self.vk_to.grid(row=0, column=3, padx=5)
         ttk.Button(map_input, text="AJOUTER", command=self.add_mapping).grid(row=0, column=4, padx=5)
 
         self.mapping_list = tk.Listbox(self.cfg_frame, height=5, font=("Consolas", 10))
@@ -160,14 +164,18 @@ class KeyboardApp:
         self.refresh_kb_list()
 
     def log(self, msg, tag=None):
-        self.log_queue.put((msg, tag))
+        self.ui_queue.put(("log", (msg, tag)))
 
-    def process_logs(self):
-        while not self.log_queue.empty():
-            msg, tag = self.log_queue.get()
-            self.log_widget.insert(tk.END, f"[{time.strftime('%H:%M:%S')}] {msg}\n", tag)
-            self.log_widget.see(tk.END)
-        self.root.after(100, self.process_logs)
+    def process_ui_tasks(self):
+        while not self.ui_queue.empty():
+            task, data = self.ui_queue.get()
+            if task == "log":
+                msg, tag = data
+                self.log_widget.insert(tk.END, f"[{time.strftime('%H:%M:%S')}] {msg}\n", tag)
+                self.log_widget.see(tk.END)
+            elif task == "refresh_list":
+                self.refresh_kb_list()
+        self.root.after(100, self.process_ui_tasks)
 
     def refresh_kb_list(self):
         for i in self.kb_tree.get_children(): self.kb_tree.delete(i)
@@ -245,7 +253,19 @@ class KeyboardApp:
                     if raw.header.dwType == RIM_TYPEKEYBOARD:
                         h = raw.header.hDevice
                         vk = raw.data.keyboard.VKey
-                        with self.lock: self.last_raw_event = {"hDevice": h, "vk": vk, "time": time.time()}
+                        is_down = not (raw.data.keyboard.Flags & 0x01)
+
+                        with self.lock:
+                            self.last_raw_event = {"hDevice": h, "vk": vk, "time": time.time()}
+                            if self.is_identifying and is_down:
+                                self.is_identifying = False
+                                h_str = str(h)
+                                if h_str not in self.config["keyboards"]:
+                                    self.config["keyboards"][h_str] = {"name": f"Kbd_{h_str[-4:]}", "mappings": {}}
+                                self.save_config()
+                                self.ui_queue.put(("refresh_list", None))
+                                self.log(f"SUCCES: Clavier {h_str} identifie et ajoute.", "match")
+
                         self.log(f"RAW: Dev={h} VK={hex(vk)}", "raw")
             return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
@@ -270,25 +290,15 @@ class KeyboardApp:
 
                 with self.lock:
                     current_raw = self.last_raw_event.copy()
-                    is_ident = self.is_identifying
 
-                # Try to correlate
+                # Correlation for mapping
                 if current_raw["vk"] == kb.vkCode and (time.time() - current_raw["time"]) < 0.2:
                     h_str = str(current_raw["hDevice"])
-
-                    if is_ident:
-                        with self.lock: self.is_identifying = False
-                        if h_str not in self.config["keyboards"]:
-                            self.config["keyboards"][h_str] = {"name": f"Clavier {h_str[-5:]}", "mappings": {}}
-                        self.save_config()
-                        self.log(f"MATCH! Clavier {h_str} identifie.", "match")
-                        self.root.after(0, self.refresh_kb_list)
-                        return 0
-
                     if h_str in self.config["keyboards"]:
                         maps = self.config["keyboards"][h_str].get("mappings", {})
-                        vk_hex = hex(kb.vkCode).lower().replace("0x0", "0x") if kb.vkCode < 16 else hex(kb.vkCode).lower()
-                        vk_match = maps.get(vk_hex) or maps.get(hex(kb.vkCode))
+                        vk_hex = hex(kb.vkCode).lower()
+                        # Try exact hex and variations
+                        vk_match = maps.get(vk_hex) or maps.get(vk_hex.replace("0x0", "0x"))
 
                         if vk_match and (wParam == WM_KEYDOWN or wParam == WM_SYSKEYDOWN):
                             try:
@@ -316,8 +326,10 @@ class KeyboardApp:
     def on_exit(self):
         if hasattr(self, 'hook_id') and self.hook_id:
             try:
+                # hook_id is an integer handle, pass directly as wintypes.HANDLE
                 user32.UnhookWindowsHookEx(self.hook_id)
-            except: pass
+            except Exception as e:
+                print(f"Error unhooking: {e}")
         self.root.destroy()
 
 if __name__ == "__main__":
