@@ -19,6 +19,14 @@ Ce projet permet de distinguer plusieurs claviers (même identiques) sous Window
    ```
 3. (Optionnel) Pour les fonctions avancées de l'interface Windows, `pywin32` peut être utile, mais le code actuel utilise `ctypes` pour éviter les dépendances lourdes.
 
+## Mise à jour automatique
+
+Pour télécharger facilement les dernières modifications sans passer par le site GitHub :
+1. Double-cliquez sur `update.bat`.
+2. Le script détectera si vous avez `git` installé.
+   - S'il est présent, il fera une mise à jour propre.
+   - S'il est absent, il utilisera PowerShell pour télécharger et extraire les derniers fichiers automatiquement.
+
 ## Utilisation de l'application principale
 
 Lancez `main_app.py` avec des droits d'administrateur (nécessaire pour intercepter les touches système) :
