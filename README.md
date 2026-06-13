@@ -8,7 +8,8 @@ Ce projet permet de distinguer plusieurs claviers (même identiques) sous Window
 - `kb_monitor.py` : Affiche en temps réel les touches pressées et le clavier d'origine.
 - `kb_correlator.py` : Démonstration technique de la corrélation entre l'ID du clavier et l'interception de touche.
 - `sayo_hid.py` : Module de base pour communiquer avec les claviers Sayodevice (RGB, etc.) via HID.
-- `main_app.py` : **Application principale**. Lancez-la, appuyez sur une touche pour identifier le clavier cible, et la touche 'A' de ce clavier sera automatiquement transformée en 'B'.
+- `main_app.py` : **Application principale (Console)**. Lancez-la, appuyez sur une touche pour identifier le clavier cible, et la touche 'A' de ce clavier sera automatiquement transformée en 'B'.
+- `main_gui.py` : **Application principale (Interface Graphique)**. Version plus conviviale avec journalisation en temps réel et bouton d'identification.
 
 ## Installation
 
@@ -17,6 +18,7 @@ Ce projet permet de distinguer plusieurs claviers (même identiques) sous Window
    ```bash
    pip install hidapi
    ```
+   **Note pour Sayodevice :** Si vous recevez une erreur `ImportError: Unable to load any of the following libraries: hidapi.dll`, vous devez télécharger `hidapi.dll` (version x64 si votre Python est x64) et la placer dans le dossier du script ou dans `C:\Windows\System32`.
 3. (Optionnel) Pour les fonctions avancées de l'interface Windows, `pywin32` peut être utile, mais le code actuel utilise `ctypes` pour éviter les dépendances lourdes.
 
 ## Mise à jour automatique

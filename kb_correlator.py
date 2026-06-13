@@ -37,6 +37,20 @@ kernel32 = ctypes.windll.kernel32
 last_raw_event = None
 event_lock = threading.Lock()
 
+# Setup argtypes/restypes for 64-bit safety
+user32.GetRawInputData.argtypes = [wintypes.HANDLE, wintypes.UINT, wintypes.LPVOID, ctypes.POINTER(wintypes.UINT), wintypes.UINT]
+user32.GetRawInputData.restype = wintypes.UINT
+user32.RegisterRawInputDevices.argtypes = [ctypes.POINTER(RAWINPUTDEVICE), wintypes.UINT, wintypes.UINT]
+user32.RegisterRawInputDevices.restype = wintypes.BOOL
+user32.CreateWindowExW.argtypes = [wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.HWND, wintypes.HANDLE, wintypes.HINSTANCE, wintypes.LPVOID]
+user32.CreateWindowExW.restype = wintypes.HWND
+user32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+user32.DefWindowProcW.restype = ctypes.c_longlong
+user32.SetWindowsHookExW.argtypes = [ctypes.c_int, ctypes.c_void_p, wintypes.HINSTANCE, wintypes.DWORD]
+user32.SetWindowsHookExW.restype = wintypes.HANDLE
+user32.CallNextHookEx.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM]
+user32.CallNextHookEx.restype = ctypes.c_longlong
+
 def raw_input_thread():
     global last_raw_event
 
@@ -58,7 +72,7 @@ def raw_input_thread():
                         }
         return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
-    WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_long, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+    WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_longlong, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
     proc_ptr = WNDPROC(wnd_proc)
     class_name = "RawInputCorrelationWindow"
     class WNDCLASSEX(ctypes.Structure):
@@ -91,13 +105,7 @@ def hook_callback(nCode, wParam, lParam):
         if current_raw and (time.time() - current_raw["time"]) < 0.05: # 50ms window
             if current_raw["vkey"] == kb.vkCode:
                 # We have a match! We know which device sent this key.
-                # Example: Block key 'A' ONLY from device with handle 0x12345
-                # For demo, just print and allow/block based on a condition
                 print(f"Key {hex(kb.vkCode)} matched to Device {current_raw['hDevice']}")
-
-                # If we want to remap:
-                # 1. Block this key (return 1)
-                # 2. Use SendInput to send the new key
 
     return user32.CallNextHookEx(hook_id, nCode, wParam, lParam)
 
@@ -107,7 +115,7 @@ if __name__ == "__main__":
     else:
         threading.Thread(target=raw_input_thread, daemon=True).start()
 
-        HOOKPROC = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+        HOOKPROC = ctypes.WINFUNCTYPE(ctypes.c_longlong, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
         callback_ptr = HOOKPROC(hook_callback)
         hook_id = user32.SetWindowsHookExW(WH_KEYBOARD_LL, callback_ptr, kernel32.GetModuleHandleW(None), 0)
 
