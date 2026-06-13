@@ -4,10 +4,11 @@ import threading
 import time
 import sys
 import tkinter as tk
-from tkinter import ttk, messagebox, simpledialog
+from tkinter import ttk, messagebox, simpledialog, filedialog
 import json
 import os
 import queue
+import subprocess
 
 # --- Windows Constants ---
 WM_INPUT = 0x00FF
@@ -17,8 +18,10 @@ RIM_TYPEKEYBOARD = 1
 WH_KEYBOARD_LL = 13
 WM_KEYDOWN = 0x0100
 WM_SYSKEYDOWN = 0x0104
+WM_KEYUP = 0x0101
+WM_SYSKEYUP = 0x0105
 
-# --- Windows Structures ---
+# --- Windows Structures (Fixed for 64-bit) ---
 class RAWINPUTDEVICE(ctypes.Structure):
     _fields_ = [("usUsagePage", wintypes.USHORT), ("usUsage", wintypes.USHORT), ("dwFlags", wintypes.DWORD), ("hwndTarget", wintypes.HWND)]
 
@@ -39,9 +42,15 @@ class KBDLLHOOKSTRUCT(ctypes.Structure):
 class KEYBDINPUT(ctypes.Structure):
     _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD), ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.POINTER(wintypes.ULONG))]
 
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG), ("mouseData", wintypes.DWORD), ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.POINTER(wintypes.ULONG))]
+
+class HARDWAREINPUT(ctypes.Structure):
+    _fields_ = [("uMsg", wintypes.DWORD), ("wParamL", wintypes.WORD), ("wParamH", wintypes.WORD)]
+
 class INPUT(ctypes.Structure):
     class _U(ctypes.Union):
-        _fields_ = [("ki", KEYBDINPUT)]
+        _fields_ = [("mi", MOUSEINPUT), ("ki", KEYBDINPUT), ("hi", HARDWAREINPUT)]
     _fields_ = [("type", wintypes.DWORD), ("u", _U)]
 
 class WNDCLASSEXW(ctypes.Structure):
@@ -80,14 +89,17 @@ CONFIG_FILE = "kb_config.json"
 class KeyboardApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Keyboard Customizer PRO")
-        self.root.geometry("1000x750")
+        self.root.title("Keyboard Customizer PRO - v4.1 (Fixed Remapping)")
+        self.root.geometry("1100x850")
 
-        self.last_raw_event = {"hDevice": 0, "vk": 0, "time": 0}
+        self.raw_events_buffer = []
         self.lock = threading.Lock()
         self.ui_queue = queue.Queue()
 
         self.is_identifying = False
+        self.is_capturing = False
+        self.capture_target = None
+
         self.config = self.load_config()
 
         self.setup_ui()
@@ -97,26 +109,20 @@ class KeyboardApp:
     def load_config(self):
         if os.path.exists(CONFIG_FILE):
             try:
-                with open(CONFIG_FILE, 'r') as f:
-                    return json.load(f)
-            except Exception as e:
-                print(f"Error loading config: {e}")
+                with open(CONFIG_FILE, 'r') as f: return json.load(f)
+            except: pass
         return {"keyboards": {}}
 
     def save_config(self):
         try:
-            with open(CONFIG_FILE, 'w') as f:
-                json.dump(self.config, f, indent=4)
-        except Exception as e:
-            self.log(f"Erreur de sauvegarde : {e}", "err")
+            with open(CONFIG_FILE, 'w') as f: json.dump(self.config, f, indent=4)
+        except Exception as e: self.log(f"Erreur sauvegarde : {e}", "err")
 
     def setup_ui(self):
         self.paned = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
         self.paned.pack(fill=tk.BOTH, expand=True)
 
-        # Left: Device List
-        self.left_frame = ttk.Frame(self.paned, padding="10")
-        self.paned.add(self.left_frame, weight=1)
+        self.left_frame = ttk.Frame(self.paned, padding="10"); self.paned.add(self.left_frame, weight=1)
         ttk.Label(self.left_frame, text="Claviers Enregistrés", font=("Arial", 11, "bold")).pack(pady=5)
         self.kb_tree = ttk.Treeview(self.left_frame, columns=("ID", "Nom"), show="headings", height=10)
         self.kb_tree.heading("ID", text="ID"); self.kb_tree.heading("Nom", text="Nom")
@@ -129,42 +135,42 @@ class KeyboardApp:
         ttk.Button(btn_box, text="Renommer", command=self.rename_keyboard).pack(side=tk.LEFT, padx=2)
         ttk.Button(btn_box, text="Supprimer", command=self.delete_keyboard).pack(side=tk.LEFT, padx=2)
 
-        # Right: Config & Logs
-        self.right_frame = ttk.Frame(self.paned, padding="10")
-        self.paned.add(self.right_frame, weight=2)
+        self.right_frame = ttk.Frame(self.paned, padding="10"); self.paned.add(self.right_frame, weight=2)
+        self.cfg_frame = ttk.LabelFrame(self.right_frame, text="Actions du Clavier", padding="10"); self.cfg_frame.pack(fill=tk.X, pady=5)
+        self.sel_label = ttk.Label(self.cfg_frame, text="Sélectionnez un clavier", font=("Arial", 9, "bold")); self.sel_label.pack(pady=5)
 
-        # Mapping Frame
-        self.cfg_frame = ttk.LabelFrame(self.right_frame, text="Mappages des touches (Hex: 0x41)", padding="10")
-        self.cfg_frame.pack(fill=tk.X, pady=5)
+        entry_frame = ttk.Frame(self.cfg_frame); entry_frame.pack(fill=tk.X, pady=5)
+        ttk.Label(entry_frame, text="Touche :").grid(row=0, column=0)
+        self.ent_from = ttk.Entry(entry_frame, width=12); self.ent_from.grid(row=0, column=1, padx=5)
+        ttk.Button(entry_frame, text="Capturer", command=lambda: self.start_capture("from")).grid(row=0, column=2)
 
-        self.sel_label = ttk.Label(self.cfg_frame, text="Sélectionnez un clavier à gauche", font=("Arial", 9, "italic"))
-        self.sel_label.pack(pady=5)
+        ttk.Label(entry_frame, text="Action :").grid(row=1, column=0, pady=10)
+        self.action_type = tk.StringVar(value="Key")
+        ttk.Radiobutton(entry_frame, text="Remapper Touche", variable=self.action_type, value="Key").grid(row=1, column=1)
+        ttk.Radiobutton(entry_frame, text="Lancer Script (.bat)", variable=self.action_type, value="Script").grid(row=1, column=2)
 
-        map_input = ttk.Frame(self.cfg_frame); map_input.pack(fill=tk.X)
-        ttk.Label(map_input, text="DE (Original) :").grid(row=0, column=0)
-        self.vk_from = ttk.Entry(map_input, width=10); self.vk_from.grid(row=0, column=1, padx=5)
-        ttk.Label(map_input, text="VERS (Cible) :").grid(row=0, column=2)
-        self.vk_to = ttk.Entry(map_input, width=10); self.vk_to.grid(row=0, column=3, padx=5)
-        ttk.Button(map_input, text="AJOUTER", command=self.add_mapping).grid(row=0, column=4, padx=5)
+        ttk.Label(entry_frame, text="Valeur :").grid(row=2, column=0)
+        self.ent_to = ttk.Entry(entry_frame, width=35); self.ent_to.grid(row=2, column=1, columnspan=2, sticky="ew", padx=5)
+        ttk.Button(entry_frame, text="Parcourir...", command=self.browse_script).grid(row=2, column=3)
+        ttk.Button(entry_frame, text="Capturer", command=lambda: self.start_capture("to")).grid(row=2, column=4)
 
-        self.mapping_list = tk.Listbox(self.cfg_frame, height=5, font=("Consolas", 10))
-        self.mapping_list.pack(fill=tk.X, pady=5)
+        ttk.Button(self.cfg_frame, text="ENREGISTRER CETTE ACTION", command=self.add_mapping, style="Accent.TButton").pack(fill=tk.X, pady=10)
+
+        self.mapping_list = tk.Listbox(self.cfg_frame, height=6, font=("Consolas", 10)); self.mapping_list.pack(fill=tk.X, pady=5)
         ttk.Button(self.cfg_frame, text="Supprimer sélection", command=self.delete_mapping).pack(anchor=tk.E)
 
-        # Debug Logs
         ttk.Label(self.right_frame, text="Journal Système :").pack(anchor=tk.W, pady=(10,0))
-        self.log_widget = tk.Text(self.right_frame, height=15, width=60, font=("Consolas", 8))
-        self.log_widget.pack(fill=tk.BOTH, expand=True)
-        self.log_widget.tag_config("raw", foreground="gray")
-        self.log_widget.tag_config("hook", foreground="purple")
-        self.log_widget.tag_config("match", foreground="green", font=("Consolas", 8, "bold"))
-        self.log_widget.tag_config("err", foreground="red")
+        self.log_widget = tk.Text(self.right_frame, height=15, width=60, font=("Consolas", 8)); self.log_widget.pack(fill=tk.BOTH, expand=True)
+        self.log_widget.tag_config("match", foreground="green", font=("Consolas", 8, "bold")); self.log_widget.tag_config("err", foreground="red")
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_exit)
         self.refresh_kb_list()
 
-    def log(self, msg, tag=None):
-        self.ui_queue.put(("log", (msg, tag)))
+    def browse_script(self):
+        f = filedialog.askopenfilename(filetypes=[("Scripts BAT", "*.bat"), ("Tous les fichiers", "*.*")])
+        if f: self.ent_to.delete(0, tk.END); self.ent_to.insert(0, f); self.action_type.set("Script")
+
+    def log(self, msg, tag=None): self.ui_queue.put(("log", (msg, tag)))
 
     def process_ui_tasks(self):
         while not self.ui_queue.empty():
@@ -173,68 +179,67 @@ class KeyboardApp:
                 msg, tag = data
                 self.log_widget.insert(tk.END, f"[{time.strftime('%H:%M:%S')}] {msg}\n", tag)
                 self.log_widget.see(tk.END)
-            elif task == "refresh_list":
-                self.refresh_kb_list()
+            elif task == "refresh_list": self.refresh_kb_list()
+            elif task == "set_entry":
+                field, val = data
+                if field == "from": self.ent_from.delete(0, tk.END); self.ent_from.insert(0, val)
+                else: self.ent_to.delete(0, tk.END); self.ent_to.insert(0, val)
         self.root.after(100, self.process_ui_tasks)
 
     def refresh_kb_list(self):
         for i in self.kb_tree.get_children(): self.kb_tree.delete(i)
-        for h, info in self.config["keyboards"].items():
-            self.kb_tree.insert("", tk.END, values=(h, info["name"]))
+        for h, info in self.config["keyboards"].items(): self.kb_tree.insert("", tk.END, values=(h, info["name"]))
 
     def on_kb_select(self, e):
         sel = self.kb_tree.selection()
         if not sel: return
         h = str(self.kb_tree.item(sel[0])["values"][0])
         info = self.config["keyboards"].get(h)
-        if info:
-            self.sel_label.config(text=f"Configuration : {info['name']} ({h})", font=("Arial", 9, "bold"))
-            self.refresh_mapping_list(h)
+        if info: self.sel_label.config(text=f"Configuration : {info['name']} ({h})"); self.refresh_mapping_list(h)
 
     def refresh_mapping_list(self, h):
         self.mapping_list.delete(0, tk.END)
         mappings = self.config["keyboards"][h].get("mappings", {})
-        for f, t in mappings.items(): self.mapping_list.insert(tk.END, f"{f} -> {t}")
+        for f, data in mappings.items(): self.mapping_list.insert(tk.END, f"{f} -> [{data.get('type')}] {data.get('value')}")
+
+    def start_capture(self, target): self.is_capturing = True; self.capture_target = target; self.log(f"Capture en cours pour {target}...", "match")
 
     def add_mapping(self):
         sel = self.kb_tree.selection()
         if not sel: return
         h = str(self.kb_tree.item(sel[0])["values"][0])
-        f, t = self.vk_from.get().strip().lower(), self.vk_to.get().strip().lower()
-        if f and t:
+        f, t_type, t_val = self.ent_from.get().strip().lower(), self.action_type.get(), self.ent_to.get().strip().lower()
+        if f and t_val:
             if not f.startswith("0x"): f = "0x" + f
-            if not t.startswith("0x"): t = "0x" + t
-            self.config["keyboards"][h].setdefault("mappings", {})[f] = t
+            if t_type == "Key" and not t_val.startswith("0x"): t_val = "0x" + t_val
+            self.config["keyboards"][h].setdefault("mappings", {})[f] = {"type": t_type, "value": t_val}
             self.save_config(); self.refresh_mapping_list(h)
 
     def delete_mapping(self):
         sel_kb = self.kb_tree.selection()
         sel_map = self.mapping_list.curselection()
-        if not sel_kb or not sel_map: return
+        if not (sel_kb and sel_map): return
         h = str(self.kb_tree.item(sel_kb[0])["values"][0])
         map_text = self.mapping_list.get(sel_map[0])
         f = map_text.split(" -> ")[0]
-        if f in self.config["keyboards"][h]["mappings"]:
+        if f in self.config["keyboards"][h].get("mappings", {}):
             del self.config["keyboards"][h]["mappings"][f]
             self.save_config(); self.refresh_mapping_list(h)
 
-    def start_identification(self):
-        with self.lock: self.is_identifying = True
-        self.log(">>> MODE IDENTIFICATION ACTIF. Appuyez sur une touche sur le clavier cible.", "match")
+    def start_identification(self): with self.lock: self.is_identifying = True; self.log(">>> MODE IDENTIFICATION ACTIF. Pressez une touche.", "match")
 
     def rename_keyboard(self):
         sel = self.kb_tree.selection()
         if not sel: return
         h = str(self.kb_tree.item(sel[0])["values"][0])
-        name = simpledialog.askstring("Renommer", "Nouveau nom :")
+        name = simpledialog.askstring("Nom", "Nom :")
         if name: self.config["keyboards"][h]["name"] = name; self.save_config(); self.refresh_kb_list()
 
     def delete_keyboard(self):
         sel = self.kb_tree.selection()
         if not sel: return
         h = str(self.kb_tree.item(sel[0])["values"][0])
-        if messagebox.askyesno("Supprimer", "Supprimer ce clavier ?"):
-            del self.config["keyboards"][h]; self.save_config(); self.refresh_kb_list()
+        if messagebox.askyesno("Confirm", "Supprimer ?"): del self.config["keyboards"][h]; self.save_config(); self.refresh_kb_list()
 
     def start_threads(self):
         threading.Thread(target=self.raw_input_loop, daemon=True).start()
@@ -251,85 +256,64 @@ class KeyboardApp:
                     user32.GetRawInputData(ctypes.cast(lparam, wintypes.HANDLE), RID_INPUT, buffer, ctypes.byref(size), ctypes.sizeof(RAWINPUTHEADER))
                     raw = RAWINPUT.from_buffer(buffer)
                     if raw.header.dwType == RIM_TYPEKEYBOARD:
-                        h = raw.header.hDevice
-                        vk = raw.data.keyboard.VKey
-                        is_down = not (raw.data.keyboard.Flags & 0x01)
-
+                        h, vk, flags = raw.header.hDevice, raw.data.keyboard.VKey, raw.data.keyboard.Flags
+                        is_down = not (flags & 0x01)
                         with self.lock:
-                            self.last_raw_event = {"hDevice": h, "vk": vk, "time": time.time()}
+                            self.raw_events_buffer.append({"h": h, "vk": vk, "time": time.time(), "is_down": is_down})
+                            if len(self.raw_events_buffer) > 10: self.raw_events_buffer.pop(0)
+                            if self.is_capturing and is_down: self.is_capturing = False; self.ui_queue.put(("set_entry", (self.capture_target, hex(vk))))
                             if self.is_identifying and is_down:
-                                self.is_identifying = False
-                                h_str = str(h)
-                                if h_str not in self.config["keyboards"]:
-                                    self.config["keyboards"][h_str] = {"name": f"Kbd_{h_str[-4:]}", "mappings": {}}
-                                self.save_config()
-                                self.ui_queue.put(("refresh_list", None))
-                                self.log(f"SUCCES: Clavier {h_str} identifie et ajoute.", "match")
-
-                        self.log(f"RAW: Dev={h} VK={hex(vk)}", "raw")
+                                self.is_identifying = False; h_str = str(h)
+                                if h_str not in self.config["keyboards"]: self.config["keyboards"][h_str] = {"name": f"Kbd_{h_str[-4:]}", "mappings": {}}
+                                self.save_config(); self.ui_queue.put(("refresh_list", None)); self.log(f"ID SUCCESS: {h_str}", "match")
             return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
-
-        self._wnd_proc = WNDPROC_TYPE(wnd_proc)
-        wc = WNDCLASSEXW()
-        wc.cbSize = ctypes.sizeof(WNDCLASSEXW); wc.lpfnWndProc = self._wnd_proc
-        wc.hInstance = kernel32.GetModuleHandleW(None); wc.lpszClassName = "KBC_RawInput_Class"
-        user32.RegisterClassExW(ctypes.byref(wc))
-        hwnd = user32.CreateWindowExW(0, wc.lpszClassName, None, 0, 0, 0, 0, 0, 0, 0, wc.hInstance, None)
-        rid = RAWINPUTDEVICE(0x01, 0x06, RIDEV_INPUTSINK, hwnd)
-        user32.RegisterRawInputDevices(ctypes.byref(rid), 1, ctypes.sizeof(rid))
-
+        self._wnd_proc = WNDPROC_TYPE(wnd_proc); wc = WNDCLASSEXW(); wc.cbSize = ctypes.sizeof(WNDCLASSEXW); wc.lpfnWndProc = self._wnd_proc
+        wc.hInstance = kernel32.GetModuleHandleW(None); wc.lpszClassName = f"KBC_RawInput_{int(time.time())}"
+        user32.RegisterClassExW(ctypes.byref(wc)); hwnd = user32.CreateWindowExW(0, wc.lpszClassName, None, 0, 0, 0, 0, 0, 0, 0, wc.hInstance, None)
+        rid = RAWINPUTDEVICE(0x01, 0x06, RIDEV_INPUTSINK, hwnd); user32.RegisterRawInputDevices(ctypes.byref(rid), 1, ctypes.sizeof(rid))
         msg = wintypes.MSG()
-        while user32.GetMessageW(ctypes.byref(msg), 0, 0, 0) != 0:
-            user32.TranslateMessage(ctypes.byref(msg)); user32.DispatchMessageW(ctypes.byref(msg))
+        while user32.GetMessageW(ctypes.byref(msg), 0, 0, 0) != 0: user32.TranslateMessage(ctypes.byref(msg)); user32.DispatchMessageW(ctypes.byref(msg))
 
     def hook_loop(self):
         def hook_callback(nCode, wParam, lParam):
             if nCode >= 0:
                 kb = KBDLLHOOKSTRUCT.from_address(lParam)
                 if kb.flags & 0x10: return user32.CallNextHookEx(None, nCode, wParam, lParam)
-
+                is_down_ev = (wParam == WM_KEYDOWN or wParam == WM_SYSKEYDOWN)
                 with self.lock:
-                    current_raw = self.last_raw_event.copy()
-
-                # Correlation for mapping
-                if current_raw["vk"] == kb.vkCode and (time.time() - current_raw["time"]) < 0.2:
-                    h_str = str(current_raw["hDevice"])
+                    match = None
+                    for ev in reversed(self.raw_events_buffer):
+                        if ev["vk"] == kb.vkCode and abs(time.time() - ev["time"]) < 0.2: match = ev; break
+                if match:
+                    h_str = str(match["h"])
                     if h_str in self.config["keyboards"]:
                         maps = self.config["keyboards"][h_str].get("mappings", {})
                         vk_hex = hex(kb.vkCode).lower()
-                        # Try exact hex and variations
-                        vk_match = maps.get(vk_hex) or maps.get(vk_hex.replace("0x0", "0x"))
-
-                        if vk_match and (wParam == WM_KEYDOWN or wParam == WM_SYSKEYDOWN):
-                            try:
-                                self.press_key(int(vk_match, 16))
-                                self.log(f"REMAP: {vk_hex} -> {vk_match} (Dev {h_str})", "match")
+                        m_data = maps.get(vk_hex) or maps.get(vk_hex.replace("0x", "0x0")) or maps.get(vk_hex.replace("0x0", "0x"))
+                        if m_data:
+                            m_type, m_val = m_data.get("type", "Key"), m_data.get("value")
+                            if m_type == "Key":
+                                self.press_key(int(m_val, 16), is_down=is_down_ev)
+                                if is_down_ev: self.log(f"REMAP: {vk_hex} -> {m_val} (Dev {h_str})", "match")
                                 return 1
-                            except: pass
-
+                            elif m_type == "Script" and is_down_ev:
+                                self.log(f"RUN: {m_val}", "match")
+                                threading.Thread(target=lambda: subprocess.Popen(m_val, shell=True), daemon=True).start()
+                                return 1
             return user32.CallNextHookEx(None, nCode, wParam, lParam)
-
         HOOKPROC_TYPE = ctypes.WINFUNCTYPE(ctypes.c_longlong, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
         self._hook_proc = HOOKPROC_TYPE(hook_callback)
         self.hook_id = user32.SetWindowsHookExW(WH_KEYBOARD_LL, self._hook_proc, kernel32.GetModuleHandleW(None), 0)
-
         msg = wintypes.MSG()
-        while user32.GetMessageW(ctypes.byref(msg), 0, 0, 0) != 0:
-            user32.TranslateMessage(ctypes.byref(msg)); user32.DispatchMessageW(ctypes.byref(msg))
+        while user32.GetMessageW(ctypes.byref(msg), 0, 0, 0) != 0: user32.TranslateMessage(ctypes.byref(msg)); user32.DispatchMessageW(ctypes.byref(msg))
 
-    def press_key(self, vk):
-        inputs = (INPUT * 2)()
-        for i in range(2): inputs[i].type = 1; inputs[i].u.ki.wVk = vk
-        inputs[1].u.ki.dwFlags = 2
-        user32.SendInput(2, ctypes.byref(inputs), ctypes.sizeof(INPUT))
+    def press_key(self, vk, is_down=True):
+        inp = INPUT(); inp.type = 1
+        inp.u.ki.wVk = vk; inp.u.ki.dwFlags = 0 if is_down else 2
+        user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
 
     def on_exit(self):
-        if hasattr(self, 'hook_id') and self.hook_id:
-            try:
-                # hook_id is an integer handle, pass directly as wintypes.HANDLE
-                user32.UnhookWindowsHookEx(self.hook_id)
-            except Exception as e:
-                print(f"Error unhooking: {e}")
+        if hasattr(self, 'hook_id') and self.hook_id: user32.UnhookWindowsHookEx(self.hook_id)
         self.root.destroy()
 
 if __name__ == "__main__":
